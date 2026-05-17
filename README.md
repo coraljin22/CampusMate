@@ -98,16 +98,14 @@ python app.py
 
 ```text
 CampusMate/
-│
-├── app.py
-├── yolov8n.pt
-├── README.md
-├── requirements.txt
-│
-├── static/
-│   ├── uploads/
-│   └── results/
-```
+- app.py
+- yolov8n.pt
+- README.md
+- requirements.txt
+- static/
+--- uploads/
+--- results/
+
 
 ---
 
