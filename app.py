@@ -1,101 +1,151 @@
-import streamlit as st
+from flask import Flask, render_template_string, request, redirect, url_for, session
 from ultralytics import YOLO
-from PIL import Image
-import pandas as pd
-import tempfile
 import os
+from werkzeug.utils import secure_filename
 
-st.set_page_config(page_title="Accessibility Audit Tool", layout="wide")
+app = Flask(__name__)
+app.secret_key = "campusmate_secret_key"
 
-st.title("AI Public Transport Accessibility Audit Tool")
+UPLOAD_FOLDER = "static/uploads"
+RESULT_FOLDER = "static/results"
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULT_FOLDER, exist_ok=True)
 
 model = YOLO("yolov8n.pt")
 
-rules = {
-    "bus": "Public transport vehicle detected.",
-    "train": "Train detected.",
-    "person": "People detected. Check if pathway is clear.",
-    "bench": "Seating available.",
-    "chair": "Seating available.",
-    "traffic light": "Traffic signal detected.",
-    "stop sign": "Signage detected.",
-    "bicycle": "Possible pathway obstacle.",
-    "car": "Possible access obstruction.",
-    "truck": "Possible access obstruction."
-}
 
-barriers = ["bicycle", "car", "truck"]
+login_page = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CampusMate Login</title>
+</head>
+<body>
+    <h1>CampusMate Login</h1>
+    <form method="POST">
+        <label>Username:</label>
+        <input type="text" name="username" required><br><br>
 
-file = st.file_uploader(
-    "Upload an image of a bus stop, tram stop, or train platform",
-    type=["jpg", "jpeg", "png"]
-)
+        <label>Password:</label>
+        <input type="password" name="password" required><br><br>
 
-if file:
-    image = Image.open(file).convert("RGB")
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+        <button type="submit">Login</button>
+    </form>
+</body>
+</html>
+"""
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        image.save(tmp.name)
-        path = tmp.name
 
-    result = model(path)[0]
-    annotated = result.plot()
+dashboard_page = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CampusMate Dashboard</title>
+</head>
+<body>
+    <h1>Hello, {{ username }}</h1>
+    <h2>Welcome to CampusMate</h2>
 
-    st.subheader("AI Detection Result")
-    st.image(annotated, use_container_width=True)
+    <p>This prototype uses YOLOv8 AI detection to identify objects from uploaded images.</p>
 
-    detected = []
+    <form action="/detect" method="POST" enctype="multipart/form-data">
+        <label>Upload an image:</label>
+        <input type="file" name="image" accept="image/*" required>
+        <button type="submit">Run AI Detection</button>
+    </form>
 
-    for box in result.boxes:
-        cls = int(box.cls[0])
-        conf = float(box.conf[0])
-        name = result.names[cls]
+    <br>
+    <a href="/logout">Logout</a>
+</body>
+</html>
+"""
 
-        if conf >= 0.35:
-            detected.append({
-                "Detected Object": name,
-                "Confidence": round(conf, 2),
-                "Accessibility Meaning": rules.get(
-                    name,
-                    "Manual review required."
-                )
-            })
 
-    st.subheader("Detection Table")
+result_page = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Detection Result</title>
+</head>
+<body>
+    <h1>AI Detection Result</h1>
 
-    if detected:
-        df = pd.DataFrame(detected)
-        st.dataframe(df, use_container_width=True)
+    <h2>Detected Objects:</h2>
+    <ul>
+        {% for item in objects %}
+            <li>{{ item }}</li>
+        {% endfor %}
+    </ul>
 
-        st.subheader("Accessibility Report")
+    <h2>Result Image:</h2>
+    <img src="{{ image_path }}" width="600">
 
-        st.markdown("### Accessibility Features")
-        for item in detected:
-            obj = item["Detected Object"]
-            if obj in rules and obj not in barriers:
-                st.write(f"- {obj}: {rules[obj]}")
+    <br><br>
+    <a href="/dashboard">Back to Dashboard</a>
+</body>
+</html>
+"""
 
-        st.markdown("### Potential Barriers")
-        found_barrier = False
-        for item in detected:
-            obj = item["Detected Object"]
-            if obj in barriers:
-                st.write(f"- {obj}: {rules[obj]}")
-                found_barrier = True
 
-        if not found_barrier:
-            st.write("- No major visible barrier detected.")
+@app.route("/", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form["username"]
+        session["username"] = username
+        return redirect(url_for("dashboard"))
 
-        st.markdown("### Manual Check Required")
-        st.write("- Ramp availability and gradient")
-        st.write("- Tactile ground surface indicators")
-        st.write("- Platform edge safety")
-        st.write("- Clear path width")
-        st.write("- Handrails")
-        st.write("- Signage readability")
+    return render_template_string(login_page)
 
-    else:
-        st.warning("No objects detected.")
 
-    os.remove(path)
+@app.route("/dashboard")
+def dashboard():
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    return render_template_string(
+        dashboard_page,
+        username=session["username"]
+    )
+
+
+@app.route("/detect", methods=["POST"])
+def detect():
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    image = request.files["image"]
+    filename = secure_filename(image.filename)
+
+    upload_path = os.path.join(UPLOAD_FOLDER, filename)
+    image.save(upload_path)
+
+    results = model(upload_path)
+
+    detected_objects = []
+
+    for result in results:
+        for box in result.boxes:
+            class_id = int(box.cls[0])
+            class_name = model.names[class_id]
+            detected_objects.append(class_name)
+
+        result.save(filename=os.path.join(RESULT_FOLDER, filename))
+
+    image_path = "/" + os.path.join(RESULT_FOLDER, filename).replace("\\", "/")
+
+    return render_template_string(
+        result_page,
+        objects=detected_objects,
+        image_path=image_path
+    )
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
